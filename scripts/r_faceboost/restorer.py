@@ -1,3 +1,4 @@
+import os
 import sys
 import cv2
 import numpy as np
@@ -25,9 +26,49 @@ from reactor_utils import (
 )
 
 
+def _find_tensorrt_libs_dir():
+    try:
+        import tensorrt as trt
+        pkg_dir = os.path.dirname(os.path.dirname(trt.__file__))
+    except Exception:
+        try:
+            import site
+            pkg_dir = site.getsitepackages()[0]
+        except Exception:
+            pkg_dir = None
+    if pkg_dir:
+        p = os.path.join(pkg_dir, "tensorrt_libs")
+        if os.path.isdir(p) and any(f.lower().startswith("nvinfer_") for f in os.listdir(p)):
+            return p
+    return None
+
+_trt_libs_dir = _find_tensorrt_libs_dir()
+if _trt_libs_dir and _trt_libs_dir not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = _trt_libs_dir + os.pathsep + os.environ.get("PATH", "")
+
+
 if cuda is not None:
     if cuda.is_available():
-        providers = ["CUDAExecutionProvider"]
+        providers = []
+        if _trt_libs_dir:
+            import onnxruntime as ort
+            if "TensorrtExecutionProvider" in ort.get_available_providers():
+                trt_cache_path = os.path.join(folder_paths.models_dir, "reactor", ".cache_trt_fp32")
+                try:
+                    os.makedirs(trt_cache_path, exist_ok=True)
+                except Exception:
+                    trt_cache_path = None
+                trt_options = {
+                    "device_id": 0,
+                    "trt_fp16_enable": False,
+                    "trt_engine_cache_enable": True,
+                    "trt_max_workspace_size": 2147483648,
+                }
+                if trt_cache_path:
+                    trt_options["trt_engine_cache_path"] = trt_cache_path
+                providers.append(("TensorrtExecutionProvider", trt_options))
+        providers.append("CUDAExecutionProvider")
+        providers.append("CPUExecutionProvider")
     else:
         providers = ["CPUExecutionProvider"]
 else:
@@ -70,17 +111,19 @@ def get_restored_face(cropped_face,
 
     cropped_face_t = img2tensor(cropped_face / 255., bgr2rgb=True, float32=True)
     normalize(cropped_face_t, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True)
-    cropped_face_t = cropped_face_t.unsqueeze(0).to(device)
+    cropped_face_t = cropped_face_t.unsqueeze(0).to(device=device, dtype=torch.float32)
 
     try:
 
         with torch.no_grad():
 
+            from scripts.reactor_swapper import get_face_restore_model_instance
+            facerestore_model = get_face_restore_model_instance(face_restore_model, device=device, providers=providers)
+
             if ".onnx" in face_restore_model:  # ONNX models
 
-                ort_session = set_ort_session(model_path, providers=providers)
+                ort_session = facerestore_model
                 ort_session_inputs = {}
-                facerestore_model = ort_session
 
                 for ort_session_input in ort_session.get_inputs():
                     if ort_session_input.name == "input":
@@ -94,22 +137,6 @@ def get_restored_face(cropped_face,
                 restored_face = normalize_cropped_face(output)
 
             else:  # PTH models
-
-                if "codeformer" in face_restore_model.lower():
-                    codeformer_net = ARCH_REGISTRY.get("CodeFormer")(
-                        dim_embd=512,
-                        codebook_size=1024,
-                        n_head=8,
-                        n_layers=9,
-                        connect_list=["32", "64", "128", "256"],
-                    ).to(device)
-                    checkpoint = torch.load(model_path)["params_ema"]
-                    codeformer_net.load_state_dict(checkpoint)
-                    facerestore_model = codeformer_net.eval()
-                else:
-                    sd = comfy.utils.load_torch_file(model_path, safe_load=True)
-                    facerestore_model = model_loading.load_state_dict(sd).eval()
-                    facerestore_model.to(device)
 
                 output = facerestore_model(cropped_face_t, w=codeformer_weight)[
                     0] if "codeformer" in face_restore_model.lower() else facerestore_model(cropped_face_t)[0]

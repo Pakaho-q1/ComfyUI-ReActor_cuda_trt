@@ -17,7 +17,9 @@ from scripts.reactor_swapper import (
     get_current_faces_model,
     analyze_faces,
     half_det_size,
-    providers
+    providers,
+    restorer_providers,
+    get_face_restore_model_instance
 )
 import folder_paths
 import comfy.model_management as model_management

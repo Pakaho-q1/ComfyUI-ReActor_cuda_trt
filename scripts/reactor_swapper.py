@@ -29,20 +29,100 @@ import warnings
 
 np.warnings = warnings
 np.warnings.filterwarnings('ignore')
-
 # PROVIDERS
-try:
-    if torch.cuda.is_available():
-        providers = ["CUDAExecutionProvider"]
-    elif torch.backends.mps.is_available():
-        providers = ["CoreMLExecutionProvider"]
-    elif hasattr(torch,'dml') or hasattr(torch,'privateuseone'):
-        providers = ["ROCMExecutionProvider"]
-    else:
-        providers = ["CPUExecutionProvider"]
-except Exception as e:
-    logger.debug(f"ExecutionProviderError: {e}.\nEP is set to CPU.")
-    providers = ["CPUExecutionProvider"]
+
+def _find_tensorrt_libs_dir():
+    try:
+        import tensorrt as trt
+        pkg_dir = os.path.dirname(os.path.dirname(trt.__file__))
+    except Exception:
+        try:
+            import site
+            pkg_dir = site.getsitepackages()[0]
+        except Exception:
+            pkg_dir = None
+    if pkg_dir:
+        for cand in ("tensorrt_libs",):
+            p = os.path.join(pkg_dir, cand)
+            if os.path.isdir(p) and any(f.lower().startswith("nvinfer_") for f in os.listdir(p)):
+                return p
+    return None
+
+_trt_libs_dir = _find_tensorrt_libs_dir()
+if _trt_libs_dir and _trt_libs_dir not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = _trt_libs_dir + os.pathsep + os.environ.get("PATH", "")
+
+
+def _build_providers():
+    try:
+        if torch.cuda.is_available():
+            ort_providers = []
+            if _trt_libs_dir:
+                import onnxruntime as ort
+                if "TensorrtExecutionProvider" in ort.get_available_providers():
+                    trt_cache_path = os.path.join(folder_paths.models_dir, "reactor", ".cache_trt")
+                    try:
+                        os.makedirs(trt_cache_path, exist_ok=True)
+                    except Exception:
+                        trt_cache_path = None
+                    trt_options = {
+                        "device_id": 0,
+                        "trt_fp16_enable": True,
+                        "trt_engine_cache_enable": True,
+                        "trt_max_workspace_size": 2147483648,
+                    }
+                    if trt_cache_path:
+                        trt_options["trt_engine_cache_path"] = trt_cache_path
+                    ort_providers.append(("TensorrtExecutionProvider", trt_options))
+            ort_providers.append("CUDAExecutionProvider")
+            ort_providers.append("CPUExecutionProvider")
+        elif torch.backends.mps.is_available():
+            ort_providers = ["CoreMLExecutionProvider"]
+        elif hasattr(torch,'dml') or hasattr(torch,'privateuseone'):
+            ort_providers = ["ROCMExecutionProvider"]
+        else:
+            ort_providers = ["CPUExecutionProvider"]
+    except Exception as e:
+        logger.debug(f"ExecutionProviderError: {e}.\nEP is set to CPU.")
+        ort_providers = ["CPUExecutionProvider"]
+    return ort_providers
+
+def _build_restorer_providers():
+    try:
+        if torch.cuda.is_available():
+            ort_providers = []
+            if _trt_libs_dir:
+                import onnxruntime as ort
+                if "TensorrtExecutionProvider" in ort.get_available_providers():
+                    trt_cache_path = os.path.join(folder_paths.models_dir, "reactor", ".cache_trt_fp32")
+                    try:
+                        os.makedirs(trt_cache_path, exist_ok=True)
+                    except Exception:
+                        trt_cache_path = None
+                    trt_options = {
+                        "device_id": 0,
+                        "trt_fp16_enable": False,
+                        "trt_engine_cache_enable": True,
+                        "trt_max_workspace_size": 2147483648,
+                    }
+                    if trt_cache_path:
+                        trt_options["trt_engine_cache_path"] = trt_cache_path
+                    ort_providers.append(("TensorrtExecutionProvider", trt_options))
+            ort_providers.append("CUDAExecutionProvider")
+            ort_providers.append("CPUExecutionProvider")
+        elif torch.backends.mps.is_available():
+            ort_providers = ["CoreMLExecutionProvider"]
+        elif hasattr(torch,'dml') or hasattr(torch,'privateuseone'):
+            ort_providers = ["ROCMExecutionProvider"]
+        else:
+            ort_providers = ["CPUExecutionProvider"]
+    except Exception as e:
+        logger.debug(f"ExecutionProviderError: {e}.\nEP is set to CPU.")
+        ort_providers = ["CPUExecutionProvider"]
+    return ort_providers
+
+providers = _build_providers()
+restorer_providers = _build_restorer_providers()
 
 models_path_old = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
 insightface_path_old = os.path.join(models_path_old, "insightface")
@@ -63,6 +143,18 @@ if os.path.exists(insightface_path) and os.path.exists(insightface_path_old):
     shutil.rmtree(models_path_old)
 
 
+import comfy.utils
+from r_basicsr.utils.registry import ARCH_REGISTRY
+from r_chainner import model_loading
+import scripts.r_archs.codeformer_arch
+from reactor_utils import (
+    move_path,
+    get_image_md5hash,
+    progress_bar,
+    progress_bar_reset,
+    set_ort_session
+)
+
 FS_MODEL = None
 CURRENT_FS_MODEL_PATH = None
 
@@ -70,6 +162,9 @@ ANALYSIS_MODELS = {
     "640": None,
     "320": None,
 }
+
+FACE_RESTORE_MODEL = None
+CURRENT_FACE_RESTORE_MODEL_PATH = None
 
 SOURCE_FACES = None
 SOURCE_IMAGE_HASH = None
@@ -84,10 +179,51 @@ def unload_model(model):
     return None
 
 def unload_all_models():
-    global FS_MODEL, CURRENT_FS_MODEL_PATH
+    global FS_MODEL, CURRENT_FS_MODEL_PATH, FACE_RESTORE_MODEL, CURRENT_FACE_RESTORE_MODEL_PATH
     FS_MODEL = unload_model(FS_MODEL)
     ANALYSIS_MODELS["320"] = unload_model(ANALYSIS_MODELS["320"])
     ANALYSIS_MODELS["640"] = unload_model(ANALYSIS_MODELS["640"])
+    FACE_RESTORE_MODEL = unload_model(FACE_RESTORE_MODEL)
+    CURRENT_FACE_RESTORE_MODEL_PATH = None
+
+def get_face_restore_model_instance(face_restore_model: str, device=None, providers=None):
+    global FACE_RESTORE_MODEL, CURRENT_FACE_RESTORE_MODEL_PATH
+    if face_restore_model == "none" or face_restore_model is None:
+        return None
+    model_path = folder_paths.get_full_path("facerestore_models", face_restore_model)
+    if model_path is None or not os.path.exists(model_path):
+        return None
+    if FACE_RESTORE_MODEL is not None and CURRENT_FACE_RESTORE_MODEL_PATH == model_path:
+        return FACE_RESTORE_MODEL
+
+    FACE_RESTORE_MODEL = unload_model(FACE_RESTORE_MODEL)
+    CURRENT_FACE_RESTORE_MODEL_PATH = model_path
+    if device is None:
+        device = model_management.get_torch_device()
+    if providers is None:
+        providers = restorer_providers
+
+    if ".onnx" in face_restore_model.lower():
+        ort_session = set_ort_session(model_path, providers=providers)
+        FACE_RESTORE_MODEL = ort_session
+    else:
+        if "codeformer" in face_restore_model.lower():
+            codeformer_net = ARCH_REGISTRY.get("CodeFormer")(
+                dim_embd=512,
+                codebook_size=1024,
+                n_head=8,
+                n_layers=9,
+                connect_list=["32", "64", "128", "256"],
+            ).to(device=device, dtype=torch.float32)
+            checkpoint = torch.load(model_path)["params_ema"]
+            codeformer_net.load_state_dict(checkpoint)
+            FACE_RESTORE_MODEL = codeformer_net.eval().float()
+        else:
+            sd = comfy.utils.load_torch_file(model_path, safe_load=True)
+            FACE_RESTORE_MODEL = model_loading.load_state_dict(sd).eval().float()
+            FACE_RESTORE_MODEL.to(device=device, dtype=torch.float32)
+
+    return FACE_RESTORE_MODEL
 
 def get_current_faces_model():
     global SOURCE_FACES

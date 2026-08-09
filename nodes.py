@@ -33,7 +33,9 @@ from scripts.reactor_faceswap import (
     get_current_faces_model,
     analyze_faces,
     half_det_size,
-    providers
+    providers,
+    restorer_providers,
+    get_face_restore_model_instance
 )
 from scripts.reactor_swapper import (
     unload_all_models,
@@ -236,30 +238,10 @@ class reactor:
 
             device = model_management.get_torch_device()
 
-            if "codeformer" in face_restore_model.lower():
-
-                codeformer_net = ARCH_REGISTRY.get("CodeFormer")(
-                    dim_embd=512,
-                    codebook_size=1024,
-                    n_head=8,
-                    n_layers=9,
-                    connect_list=["32", "64", "128", "256"],
-                ).to(device)
-                checkpoint = torch.load(model_path)["params_ema"]
-                codeformer_net.load_state_dict(checkpoint)
-                facerestore_model = codeformer_net.eval()
-
-            elif ".onnx" in face_restore_model:
-
-                ort_session = set_ort_session(model_path, providers=providers)
+            facerestore_model = get_face_restore_model_instance(face_restore_model, device=device, providers=restorer_providers)
+            if ".onnx" in face_restore_model.lower():
+                ort_session = facerestore_model
                 ort_session_inputs = {}
-                facerestore_model = ort_session
-
-            else:
-
-                sd = comfy.utils.load_torch_file(model_path, safe_load=True)
-                facerestore_model = model_loading.load_state_dict(sd).eval()
-                facerestore_model.to(device)
 
             if faceSize != FACE_SIZE or self.face_helper is None:
                 self.face_helper = FaceRestoreHelper(1, face_size=faceSize, crop_ratio=(1, 1), det_model=facedetection, save_ext='png', use_parse=True, device=device)
@@ -339,7 +321,7 @@ class reactor:
                         # if ".pth" in face_restore_model:
                         cropped_face_t = img2tensor(cropped_face / 255., bgr2rgb=True, float32=True)
                         normalize(cropped_face_t, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True)
-                        cropped_face_t = cropped_face_t.unsqueeze(0).to(device)
+                        cropped_face_t = cropped_face_t.unsqueeze(0).to(device=device, dtype=torch.float32)
 
                         try:
 
@@ -449,22 +431,14 @@ class reactor:
         script = FaceSwapScript()
         pil_images = batch_tensor_to_pil(input_image)
 
-        # NSFW checker
-        logger.status("Checking for any unsafe content...")
+        # NSFW checker disabled
+        logger.status("NSFW checker is disabled.")
         pbar = progress_bar(len(pil_images))
-        pil_images_sfw = []
         for img in pil_images:
             if state.interrupted or model_management.processing_interrupted():
                 logger.status("Interrupted by User")
                 break
-            img_byte_arr = io.BytesIO()
-            img.save(img_byte_arr, format='PNG')
-            img_byte_arr = img_byte_arr.getvalue()
-            if not sfw.nsfw_image(img_byte_arr, NSFWDET_MODEL_PATH):
-                pil_images_sfw.append(img)
             pbar.update(1)
-        pil_images = pil_images_sfw
-        # # #
         progress_bar_reset(pbar)
 
         if len(pil_images) > 0:
@@ -972,30 +946,10 @@ class RestoreFaceAdvanced:
 
             device = model_management.get_torch_device()
 
-            if "codeformer" in face_restore_model.lower():
-
-                codeformer_net = ARCH_REGISTRY.get("CodeFormer")(
-                    dim_embd=512,
-                    codebook_size=1024,
-                    n_head=8,
-                    n_layers=9,
-                    connect_list=["32", "64", "128", "256"],
-                ).to(device)
-                checkpoint = torch.load(model_path)["params_ema"]
-                codeformer_net.load_state_dict(checkpoint)
-                facerestore_model = codeformer_net.eval()
-
-            elif ".onnx" in face_restore_model:
-
-                ort_session = set_ort_session(model_path, providers=providers)
+            facerestore_model = get_face_restore_model_instance(face_restore_model, device=device, providers=restorer_providers)
+            if ".onnx" in face_restore_model.lower():
+                ort_session = facerestore_model
                 ort_session_inputs = {}
-                facerestore_model = ort_session
-
-            else:
-
-                sd = comfy.utils.load_torch_file(model_path, safe_load=True)
-                facerestore_model = model_loading.load_state_dict(sd).eval()
-                facerestore_model.to(device)
 
             if faceSize != FACE_SIZE or self.face_helper is None:
                 self.face_helper = FaceRestoreHelper(1, face_size=faceSize, crop_ratio=(1, 1), det_model=facedetection, save_ext='png', use_parse=True, device=device)
