@@ -81,6 +81,14 @@ with open(req_file) as file:
                 run_pip(ort,"-U")
         elif not is_installed(ort,"1.16.1",False):
             run_pip(ort, "-U")
+
+        if cuda_version is not None:
+            if not is_installed("tensorrt") and not is_installed("tensorrt_libs"):
+                print("[ReActor] Checking TensorRT... Installing TensorRT for CUDA acceleration...")
+                try:
+                    run_pip("tensorrt")
+                except Exception as trt_err:
+                    print(f"[ReActor] Warning: Optional TensorRT installation skipped: {trt_err}")
     except Exception as e:
         print(e)
         print(f"Warning: Failed to install {ort}, ReActor will not work.")
