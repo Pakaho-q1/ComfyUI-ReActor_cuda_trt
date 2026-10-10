@@ -2,7 +2,7 @@
 
   <img src="https://github.com/Gourieff/Assets/raw/main/sd-webui-reactor/ReActor_logo_NEW_EN.png?raw=true" alt="logo" width="180px"/>
 
-  ![Version](https://img.shields.io/badge/node_version-0.7.0_alpha2-lightgreen?style=for-the-badge&labelColor=darkgreen)
+  ![Version](https://img.shields.io/badge/node_version-0.7.1-brightgreen?style=for-the-badge&labelColor=darkgreen)
 
   <a href="https://boosty.to/artgourieff" target="_blank">
     <img src="https://lovemet.ru/img/boosty.jpg" width="108" alt="Support Me on Boosty"/>
@@ -46,15 +46,22 @@
 
 ## What's new in the latest update
 
-### 0.7.0 <sub><sup>ALPHA2</sup></sub>
+### 0.7.1
 
-- Fixed: gender detection issue and face index logic (issue [#234](https://github.com/Gourieff/ComfyUI-ReActor/issues/234))
+- **New `DLSS5 Frame Enhancer` node**. NVIDIA's latest DLSS 5 technology for enhancing image quality (both overall frame or faces by mask). <br><u>See [Installation Instructions](https://github.com/Gourieff/ComfyUI-ReActor/blob/main/r_dlssnr/dll/README.md).</u><br><pre>The integration operates in an isolated Host mode, fully eliminating conflicts with ComfyUI's CUDA context.<br>Huge thanks to the author of the [Merserk/dlss5-visual-enhancer](https://github.com/Merserk/dlss5-visual-enhancer) project for the C++ wrapper (neuroframe_engine.dll and neuroframe_caller.dll), which formed the base of the computational bridge for this node.<br>Also thanks Gemini 3.1 Pro (via [Google Gemini](https://gemini.google.com/app)) for the contribution.</pre><u>Requirements:</u><br>
+-- Windows 10/11<br>
+-- NVIDIA display driver >= 616.x<br>
+-- NVIDIA RTX 40/50-series GPU<br>
+(compatibility with older RTX series is unconfirmed)
+- Other fixes and improvements
 
-### 0.7.0 <sub><sup>ALPHA1</sup></sub>
+### 0.7.0
 
 - 💥 **Big Update! ☢ New ReActor Core!**<br>✅ No `Insightface` required!<br>✅ No `C++ Build Tools` required!<br>✅ Instalation process is much easier now!<br>✅ `Numpy 2.x` friendly as well as `1.x`!<br>⚠ <u>A swap result is slightly different now</u>. Hard to say if it’s "better" or "worse" — it’s just a bit different. But if we look at the numbers (cosine similarity of face embeddings), the accuracy is actually a little higher than with Insightface.<br>More info you can find here: https://t.me/reactor_faceswap/55
 - New Node "Face Similarity" to check face likeness after you make a swap
 - HyperSwap CPU Float normalization fix (thanks @Buumcode, issue [#183](https://github.com/Gourieff/ComfyUI-ReActor/issues/183))
+- Fixed: gender detection issue and face index logic (issue [#234](https://github.com/Gourieff/ComfyUI-ReActor/issues/234))
+- Comfy Desktop friendly `install.bat`
 - Other fixes and improvements
 
 <details>
@@ -268,7 +275,7 @@ Thanks to everyone who finds bugs, suggests new features and supports this proje
  - buffalo_l: downloaded on first launch into `ComfyUI\models\insightface\models\buffalo_l`, or you can download manually from [here](https://huggingface.co/datasets/Gourieff/ReActor/tree/main/models)
  - inswapper_128: downloaded during installation into `ComfyUI\models\insightface`, or you can download manually from [here](https://huggingface.co/datasets/Gourieff/ReActor/tree/main/models)
  - reswapper_128/256: https://huggingface.co/datasets/Gourieff/ReActor/tree/main/models put them into `ComfyUI\models\reswapper`
- - hyperswap_256: https://huggingface.co/facefusion/models-3.3.0/tree/main (hyperswap_1a_256.onnx, hyperswap_1b_256.onnx, hyperswap_1a_256.onnx) put them into `ComfyUI\models\hyperswap`
+ - hyperswap_256: https://huggingface.co/facefusion/models-3.3.0/tree/main (hyperswap_1a_256.onnx, hyperswap_1b_256.onnx, hyperswap_1c_256.onnx) put them into `ComfyUI\models\hyperswap`
  - Face restoration models: https://huggingface.co/datasets/Gourieff/ReActor/tree/main/models/facerestore_models put any you like into `ComfyUI\models\facerestore_models`
  - Ultralytics model: https://huggingface.co/datasets/Gourieff/ReActor/blob/main/models/detection/bbox/face_yolov8m.pt put into `ComfyUI\models\ultralytics\bbox`
  - SAM models: https://huggingface.co/datasets/Gourieff/ReActor/tree/main/models/sams put into `ComfyUI\models\sams`
@@ -297,6 +304,7 @@ List of Nodes:
   - ReActorImageDublicator (Dublicate one Image to Images List)
   - ImageRGBA2RGB (Convert RGBA to RGB)
   - ReActorUnload (Unload ReActor models from VRAM)
+  - DLSS5FrameEnhancer (Enhance frame quality with NVIDIA DLSS 5)
 
 Connect all required slots and run the query.
 

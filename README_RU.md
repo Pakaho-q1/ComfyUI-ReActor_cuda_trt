@@ -2,7 +2,7 @@
 
   <img src="https://github.com/Gourieff/Assets/raw/main/sd-webui-reactor/ReActor_logo_NEW_RU.png?raw=true" alt="logo" width="180px"/>
 
-  ![Version](https://img.shields.io/badge/версия_нода-0.7.0_alpha2-lightgreen?style=for-the-badge&labelColor=darkgreen)
+  ![Version](https://img.shields.io/badge/версия_нода-0.7.1-brightgreen?style=for-the-badge&labelColor=darkgreen)
 
   <a href="https://boosty.to/artgourieff" target="_blank">
     <img src="https://lovemet.ru/img/boosty.jpg" width="108" alt="Поддержать проект на Boosty"/>
@@ -46,15 +46,22 @@
 
 ## Что нового в последнем обновлении
 
-### 0.7.0 <sub><sup>ALPHA2</sup></sub>
+### 0.7.1
 
-- Исправлено: проблема определения пола и логика индексов лиц (Issue [#234](https://github.com/Gourieff/ComfyUI-ReActor/issues/234))
+- **Новый узел `DLSS5 Frame Enhancer`**. Новейшая технология DLSS 5 от NVIDIA для улучшения качества изображения (кадра целиком или лиц по маске).<br><u>Следуйте [инструкции по установке](https://github.com/Gourieff/ComfyUI-ReActor/blob/main/r_dlssnr/dll/README.md).</u><br><pre>Интеграция работает в изолированном Host-режиме, что полностью исключает конфликты с CUDA-контекстом ComfyUI.<br>Огромная благодарность автору проекта [Merserk/dlss5-visual-enhancer](https://github.com/Merserk/dlss5-visual-enhancer) за C++ обертку (neuroframe_engine.dll и neuroframe_caller.dll), которая легла в основу вычислительного моста для данного узла.<br>Также благодарность Gemini 3.1 Pro (через [Google Gemini](https://gemini.google.com/app)) за ассистирование и помощь.</pre><u>Требования:</u><br>
+-- Windows 10/11<br>
+-- NVIDIA display driver >= 616.x<br>
+-- NVIDIA RTX 40/50-series GPU<br>
+(совместимость с более старыми сериями RTX не подтверждена)
+- Прочие улучшение и исправления
 
-### 0.7.0 <sub><sup>ALPHA1</sup></sub>
+### 0.7.0
 
 - 💥 **Важное обновление! ☢ Новое ядро РеАктора!**<br>✅ Библиотека `Insightface` больше не требуется!<br>✅ `C++ Build Tools` больше не требуются!<br>✅ Более простой процесс установки!<br>✅ Поддержка `Numpy 2.x` и `1.x`!<br>⚠ <u>Результат Свапа теперь слегка отличается</u>. Сложно сказать, хуже или лучше — результат просто чуть-чуть другой. По показателям схожести (оценка косинусного сходства векторов эмбеддингов лиц) результат стал немного лучше (хоть и незначительно), чем с Insightface.<br>Подробнее здесь: https://t.me/reactor_faceswap/55
 - Новый узел "Face Similarity" для проверки схожести лиц после свапа
 - Исправление "HyperSwap CPU Float normalization" (спасибо @Buumcode, Issue [#183](https://github.com/Gourieff/ComfyUI-ReActor/issues/183))
+- Исправлено: проблема определения пола и логика индексов лиц (Issue [#234](https://github.com/Gourieff/ComfyUI-ReActor/issues/234))
+- Улучшен `install.bat` для поддержки запуска установки в Comfy Desktop
 - Прочие улучшение и исправления
 
 <details>
@@ -268,7 +275,7 @@ Basic workflow [💾](https://github.com/Gourieff/Assets/blob/main/comfyui-react
  - buffalo_l: скачиваются при первом запуске в `ComfyUI\models\insightface\models\buffalo_l`, для ручного скачивания доступны [здесь](https://huggingface.co/datasets/Gourieff/ReActor/tree/main/models)
  - inswapper_128: скачивается при установке в `ComfyUI\models\insightface`, для ручного скачивания доступны [здесь](https://huggingface.co/datasets/Gourieff/ReActor/tree/main/models)
  - reswapper_128/256: https://huggingface.co/datasets/Gourieff/ReActor/tree/main/models скачать в `ComfyUI\models\reswapper`
- - hyperswap_256: https://huggingface.co/facefusion/models-3.3.0/tree/main (hyperswap_1a_256.onnx, hyperswap_1b_256.onnx, hyperswap_1a_256.onnx) скачать в `ComfyUI\models\hyperswap`
+ - hyperswap_256: https://huggingface.co/facefusion/models-3.3.0/tree/main (hyperswap_1a_256.onnx, hyperswap_1b_256.onnx, hyperswap_1c_256.onnx) скачать в `ComfyUI\models\hyperswap`
  - Face restoration models: https://huggingface.co/datasets/Gourieff/ReActor/tree/main/models/facerestore_models скачать любые предпочитаемые в `ComfyUI\models\facerestore_models`
  - Ultralytics model: https://huggingface.co/datasets/Gourieff/ReActor/blob/main/models/detection/bbox/face_yolov8m.pt скачать в `ComfyUI\models\ultralytics\bbox`
  - SAM models: https://huggingface.co/datasets/Gourieff/ReActor/tree/main/models/sams скачать в `ComfyUI\models\sams`
@@ -299,6 +306,7 @@ Basic workflow [💾](https://github.com/Gourieff/Assets/blob/main/comfyui-react
   - ReActorImageDublicator (Сделать из одного изображения несколько дубликатов)
   - ImageRGBA2RGB (Конвертировать RGBA в RGB)
   - ReActorUnload (Выгрузить модели РеАктора из VRAM)
+  - DLSS5FrameEnhancer (Улучшение детализации кадра с NVIDIA DLSS 5)
 
 Соедините все необходимые слоты (slots) и запустите очередь (query).
 
