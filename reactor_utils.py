@@ -18,6 +18,93 @@ from comfy.utils import ProgressBar
 
 ORT_SESSION = None
 
+def init_trt_env():
+    """Ensure TensorRT and CUDA DLLs are discoverable on Windows."""
+    import sys
+    if sys.platform != "win32":
+        return
+    for sp in sys.path:
+        if "site-packages" in sp or "dist-packages" in sp:
+            for cand in ["tensorrt_libs", "tensorrt_cu12_libs"]:
+                cand_path = os.path.join(sp, cand)
+                if os.path.isdir(cand_path):
+                    if cand_path not in os.environ.get("PATH", ""):
+                        os.environ["PATH"] = cand_path + os.pathsep + os.environ.get("PATH", "")
+                    if hasattr(os, "add_dll_directory"):
+                        try:
+                            os.add_dll_directory(cand_path)
+                        except Exception:
+                            pass
+
+init_trt_env()
+
+def resolve_providers(provider: str = "cuda", model_path: str = None, fp16: bool = True):
+    """
+    Returns the list of onnxruntime execution providers based on chosen option:
+    'cuda', 'trt', or 'cpu'.
+    Enforces FP32 for models known to break in FP16 (e.g. GFPGAN).
+    """
+    init_trt_env()
+    provider_str = str(provider).strip().lower() if provider else "cuda"
+    available = onnxruntime.get_available_providers()
+    
+    if provider_str in ["trt", "tensorrt"]:
+        if "TensorrtExecutionProvider" in available:
+            models_dir = folder_paths.models_dir if hasattr(folder_paths, "models_dir") else "./models"
+            cache_dir = os.path.join(models_dir, "reactor", "trt_cache")
+            os.makedirs(cache_dir, exist_ok=True)
+            
+            # Check for models that break in TensorRT FP16 (e.g. GFPGAN)
+            use_fp16 = fp16
+            if model_path:
+                mp_lower = str(model_path).lower()
+                if "gfpgan" in mp_lower:
+                    use_fp16 = False
+                    print(f"[ReActor] Note: {model_path} does not support TensorRT FP16 (causes NaN/black output). Running in FP32.")
+
+            trt_options = {
+                'device_id': 0,
+                'trt_max_workspace_size': 2147483648,
+                'trt_fp16_enable': use_fp16,
+                'trt_engine_cache_enable': True,
+                'trt_engine_cache_path': cache_dir,
+            }
+            cuda_options = {'device_id': 0}
+            return [
+                ('TensorrtExecutionProvider', trt_options),
+                ('CUDAExecutionProvider', cuda_options),
+                'CPUExecutionProvider'
+            ]
+        elif "CUDAExecutionProvider" in available:
+            print("[ReActor] TensorrtExecutionProvider is not available, falling back to CUDAExecutionProvider")
+            return [("CUDAExecutionProvider", {"device_id": 0}), "CPUExecutionProvider"]
+        else:
+            print("[ReActor] TensorrtExecutionProvider is not available, falling back to CPUExecutionProvider")
+            return ["CPUExecutionProvider"]
+            
+    elif provider_str == "cuda":
+        if "CUDAExecutionProvider" in available:
+            return [("CUDAExecutionProvider", {"device_id": 0}), "CPUExecutionProvider"]
+        else:
+            print("[ReActor] CUDAExecutionProvider is not available, falling back to CPUExecutionProvider")
+            return ["CPUExecutionProvider"]
+            
+    elif provider_str == "cpu":
+        return ["CPUExecutionProvider"]
+        
+    else:
+        if "CUDAExecutionProvider" in available:
+            return [("CUDAExecutionProvider", {"device_id": 0}), "CPUExecutionProvider"]
+        return ["CPUExecutionProvider"]
+
+def get_torch_device_for_provider(provider: str = "cuda"):
+    import comfy.model_management as model_management
+    provider_str = str(provider).strip().lower() if provider else "cuda"
+    if provider_str == "cpu":
+        return torch.device("cpu")
+    else:
+        return model_management.get_torch_device()
+
 def tensor_to_pil(img_tensor, batch_index=0):
     # Convert tensor of shape [batch_size, channels, height, width] at the batch_index to PIL Image
     img_tensor = img_tensor[batch_index].unsqueeze(0)
@@ -215,6 +302,18 @@ def get_ort_session():
 def set_ort_session(model_path, providers) -> Any:
     global ORT_SESSION
     onnxruntime.set_default_logger_severity(3)
+    if model_path and "gfpgan" in str(model_path).lower():
+        fixed_providers = []
+        for p in providers:
+            if isinstance(p, tuple) and p[0] == 'TensorrtExecutionProvider':
+                opts = dict(p[1]) if len(p) > 1 and isinstance(p[1], dict) else {}
+                if opts.get('trt_fp16_enable', True):
+                    opts['trt_fp16_enable'] = False
+                    print(f"[ReActor] Enforcing TensorRT FP32 for {model_path} to prevent FP16 overflow/black output.")
+                fixed_providers.append((p[0], opts))
+            else:
+                fixed_providers.append(p)
+        providers = fixed_providers
     ORT_SESSION = onnxruntime.InferenceSession(model_path, providers=providers)
     return ORT_SESSION
 

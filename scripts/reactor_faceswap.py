@@ -17,9 +17,7 @@ from scripts.reactor_swapper import (
     get_current_faces_model,
     analyze_faces,
     half_det_size,
-    providers,
-    restorer_providers,
-    get_face_restore_model_instance
+    providers
 )
 import folder_paths
 import comfy.model_management as model_management
@@ -62,6 +60,8 @@ class FaceSwapScript(scripts.Script):
         face_restore_visibility,
         codeformer_weight,
         interpolation,
+        provider: str = "cuda",
+        face_boost_provider: str = None,
     ):
         self.enable = enable
         if self.enable:
@@ -78,6 +78,8 @@ class FaceSwapScript(scripts.Script):
             self.face_restore_visibility = face_restore_visibility
             self.codeformer_weight = codeformer_weight
             self.interpolation = interpolation
+            self.provider = provider
+            self.face_boost_provider = face_boost_provider
             self.source_faces_index = [
                 int(x) for x in source_faces_index.strip(",").split(",") if x.isnumeric()
             ]
@@ -124,6 +126,8 @@ class FaceSwapScript(scripts.Script):
                         face_restore_visibility=self.face_restore_visibility,
                         codeformer_weight=self.codeformer_weight,
                         interpolation=self.interpolation,
+                        provider=self.provider,
+                        face_boost_provider=self.face_boost_provider,
                     )
                     p.init_images[0] = result
                     p.bbox = bbox
@@ -145,6 +149,8 @@ class FaceSwapScript(scripts.Script):
                         face_restore_visibility=self.face_restore_visibility,
                         codeformer_weight=self.codeformer_weight,
                         interpolation=self.interpolation,
+                        provider=self.provider,
+                        face_boost_provider=self.face_boost_provider,
                     )
                     p.init_images = result
                     p.bbox = bbox

@@ -8,7 +8,8 @@ from r_modules.shared import state
 from reactor_utils import (
     batch_tensor_to_pil, 
     progress_bar,
-    progress_bar_reset
+    progress_bar_reset,
+    get_torch_device_for_provider
 )
 
 class DLSS5FrameEnhancer:
@@ -32,6 +33,7 @@ class DLSS5FrameEnhancer:
                 "grain_preservation": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "0..1, def: 0.0"}),
                 "nr_passes": ("INT", {"default": 1, "min": 1, "max": 4, "tooltip": "0..4, def: 1"}),
                 "auto_mask": ("BOOLEAN", {"default": False, "label_off": "OFF", "label_on": "ON", "tooltip": "AI Automatic masking of complex areas to prevent over-detailing"}),
+                "execution_provider": (["cuda", "trt", "cpu"], {"default": "cuda"}),
             },
             "optional": {
                 "mask": ("MASK",),
@@ -62,8 +64,11 @@ class DLSS5FrameEnhancer:
 
     def enhance(self, image, style, intensity, local_tone, local_structure, 
                 skin_structure, color_strength, tone_preservation, 
-                face_skin_protection, grain_preservation, nr_passes, auto_mask, mask=None):
+                face_skin_protection, grain_preservation, nr_passes, auto_mask, mask=None, execution_provider="cuda"):
         
+        if execution_provider == "cpu":
+            logger.warning("DLSS-5 requires an NVIDIA RTX GPU and cannot run on CPU. Falling back to default GPU device.")
+        self.device = get_torch_device_for_provider(execution_provider) if execution_provider != "cpu" else model_management.get_torch_device()
         self.load_bridge()
         
         style_map = {"Default": 0, "Nature": 1, "Cinematic": 2}

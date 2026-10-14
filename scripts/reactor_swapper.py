@@ -21,7 +21,9 @@ from reactor_utils import (
     move_path,
     get_image_md5hash,
     progress_bar,
-    progress_bar_reset
+    progress_bar_reset,
+    resolve_providers,
+    get_torch_device_for_provider
 )
 from scripts.r_faceboost import swapper, restorer
 
@@ -29,100 +31,9 @@ import warnings
 
 np.warnings = warnings
 np.warnings.filterwarnings('ignore')
+
 # PROVIDERS
-
-def _find_tensorrt_libs_dir():
-    try:
-        import tensorrt as trt
-        pkg_dir = os.path.dirname(os.path.dirname(trt.__file__))
-    except Exception:
-        try:
-            import site
-            pkg_dir = site.getsitepackages()[0]
-        except Exception:
-            pkg_dir = None
-    if pkg_dir:
-        for cand in ("tensorrt_libs",):
-            p = os.path.join(pkg_dir, cand)
-            if os.path.isdir(p) and any(f.lower().startswith("nvinfer_") for f in os.listdir(p)):
-                return p
-    return None
-
-_trt_libs_dir = _find_tensorrt_libs_dir()
-if _trt_libs_dir and _trt_libs_dir not in os.environ.get("PATH", ""):
-    os.environ["PATH"] = _trt_libs_dir + os.pathsep + os.environ.get("PATH", "")
-
-
-def _build_providers():
-    try:
-        if torch.cuda.is_available():
-            ort_providers = []
-            if _trt_libs_dir:
-                import onnxruntime as ort
-                if "TensorrtExecutionProvider" in ort.get_available_providers():
-                    trt_cache_path = os.path.join(folder_paths.models_dir, "reactor", ".cache_trt")
-                    try:
-                        os.makedirs(trt_cache_path, exist_ok=True)
-                    except Exception:
-                        trt_cache_path = None
-                    trt_options = {
-                        "device_id": 0,
-                        "trt_fp16_enable": True,
-                        "trt_engine_cache_enable": True,
-                        "trt_max_workspace_size": 2147483648,
-                    }
-                    if trt_cache_path:
-                        trt_options["trt_engine_cache_path"] = trt_cache_path
-                    ort_providers.append(("TensorrtExecutionProvider", trt_options))
-            ort_providers.append("CUDAExecutionProvider")
-            ort_providers.append("CPUExecutionProvider")
-        elif torch.backends.mps.is_available():
-            ort_providers = ["CoreMLExecutionProvider"]
-        elif hasattr(torch,'dml') or hasattr(torch,'privateuseone'):
-            ort_providers = ["ROCMExecutionProvider"]
-        else:
-            ort_providers = ["CPUExecutionProvider"]
-    except Exception as e:
-        logger.debug(f"ExecutionProviderError: {e}.\nEP is set to CPU.")
-        ort_providers = ["CPUExecutionProvider"]
-    return ort_providers
-
-def _build_restorer_providers():
-    try:
-        if torch.cuda.is_available():
-            ort_providers = []
-            if _trt_libs_dir:
-                import onnxruntime as ort
-                if "TensorrtExecutionProvider" in ort.get_available_providers():
-                    trt_cache_path = os.path.join(folder_paths.models_dir, "reactor", ".cache_trt_fp32")
-                    try:
-                        os.makedirs(trt_cache_path, exist_ok=True)
-                    except Exception:
-                        trt_cache_path = None
-                    trt_options = {
-                        "device_id": 0,
-                        "trt_fp16_enable": False,
-                        "trt_engine_cache_enable": True,
-                        "trt_max_workspace_size": 2147483648,
-                    }
-                    if trt_cache_path:
-                        trt_options["trt_engine_cache_path"] = trt_cache_path
-                    ort_providers.append(("TensorrtExecutionProvider", trt_options))
-            ort_providers.append("CUDAExecutionProvider")
-            ort_providers.append("CPUExecutionProvider")
-        elif torch.backends.mps.is_available():
-            ort_providers = ["CoreMLExecutionProvider"]
-        elif hasattr(torch,'dml') or hasattr(torch,'privateuseone'):
-            ort_providers = ["ROCMExecutionProvider"]
-        else:
-            ort_providers = ["CPUExecutionProvider"]
-    except Exception as e:
-        logger.debug(f"ExecutionProviderError: {e}.\nEP is set to CPU.")
-        ort_providers = ["CPUExecutionProvider"]
-    return ort_providers
-
-providers = _build_providers()
-restorer_providers = _build_restorer_providers()
+providers = resolve_providers("cuda")
 
 models_path_old = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
 insightface_path_old = os.path.join(models_path_old, "insightface")
@@ -143,28 +54,15 @@ if os.path.exists(insightface_path) and os.path.exists(insightface_path_old):
     shutil.rmtree(models_path_old)
 
 
-import comfy.utils
-from r_basicsr.utils.registry import ARCH_REGISTRY
-from r_chainner import model_loading
-import scripts.r_archs.codeformer_arch
-from reactor_utils import (
-    move_path,
-    get_image_md5hash,
-    progress_bar,
-    progress_bar_reset,
-    set_ort_session
-)
-
 FS_MODEL = None
 CURRENT_FS_MODEL_PATH = None
+CURRENT_FS_PROVIDER = None
 
 ANALYSIS_MODELS = {
     "640": None,
     "320": None,
 }
-
-FACE_RESTORE_MODEL = None
-CURRENT_FACE_RESTORE_MODEL_PATH = None
+CURRENT_ANALYSIS_PROVIDER = None
 
 SOURCE_FACES = None
 SOURCE_IMAGE_HASH = None
@@ -179,81 +77,51 @@ def unload_model(model):
     return None
 
 def unload_all_models():
-    global FS_MODEL, CURRENT_FS_MODEL_PATH, FACE_RESTORE_MODEL, CURRENT_FACE_RESTORE_MODEL_PATH
+    global FS_MODEL, CURRENT_FS_MODEL_PATH, CURRENT_FS_PROVIDER, CURRENT_ANALYSIS_PROVIDER
     FS_MODEL = unload_model(FS_MODEL)
+    CURRENT_FS_MODEL_PATH = None
+    CURRENT_FS_PROVIDER = None
     ANALYSIS_MODELS["320"] = unload_model(ANALYSIS_MODELS["320"])
     ANALYSIS_MODELS["640"] = unload_model(ANALYSIS_MODELS["640"])
-    FACE_RESTORE_MODEL = unload_model(FACE_RESTORE_MODEL)
-    CURRENT_FACE_RESTORE_MODEL_PATH = None
-
-def get_face_restore_model_instance(face_restore_model: str, device=None, providers=None):
-    global FACE_RESTORE_MODEL, CURRENT_FACE_RESTORE_MODEL_PATH
-    if face_restore_model == "none" or face_restore_model is None:
-        return None
-    model_path = folder_paths.get_full_path("facerestore_models", face_restore_model)
-    if model_path is None or not os.path.exists(model_path):
-        return None
-    if FACE_RESTORE_MODEL is not None and CURRENT_FACE_RESTORE_MODEL_PATH == model_path:
-        return FACE_RESTORE_MODEL
-
-    FACE_RESTORE_MODEL = unload_model(FACE_RESTORE_MODEL)
-    CURRENT_FACE_RESTORE_MODEL_PATH = model_path
-    if device is None:
-        device = model_management.get_torch_device()
-    if providers is None:
-        providers = restorer_providers
-
-    if ".onnx" in face_restore_model.lower():
-        ort_session = set_ort_session(model_path, providers=providers)
-        FACE_RESTORE_MODEL = ort_session
-    else:
-        if "codeformer" in face_restore_model.lower():
-            codeformer_net = ARCH_REGISTRY.get("CodeFormer")(
-                dim_embd=512,
-                codebook_size=1024,
-                n_head=8,
-                n_layers=9,
-                connect_list=["32", "64", "128", "256"],
-            ).to(device=device, dtype=torch.float32)
-            checkpoint = torch.load(model_path)["params_ema"]
-            codeformer_net.load_state_dict(checkpoint)
-            FACE_RESTORE_MODEL = codeformer_net.eval().float()
-        else:
-            sd = comfy.utils.load_torch_file(model_path, safe_load=True)
-            FACE_RESTORE_MODEL = model_loading.load_state_dict(sd).eval().float()
-            FACE_RESTORE_MODEL.to(device=device, dtype=torch.float32)
-
-    return FACE_RESTORE_MODEL
+    CURRENT_ANALYSIS_PROVIDER = None
 
 def get_current_faces_model():
     global SOURCE_FACES
     return SOURCE_FACES
 
-def getAnalysisModel(det_size = (640, 640)):
-    global ANALYSIS_MODELS
+def getAnalysisModel(det_size = (640, 640), provider = "cuda"):
+    global ANALYSIS_MODELS, CURRENT_ANALYSIS_PROVIDER
+    if CURRENT_ANALYSIS_PROVIDER != provider:
+        ANALYSIS_MODELS["320"] = unload_model(ANALYSIS_MODELS["320"])
+        ANALYSIS_MODELS["640"] = unload_model(ANALYSIS_MODELS["640"])
+        CURRENT_ANALYSIS_PROVIDER = provider
+
     ANALYSIS_MODEL = ANALYSIS_MODELS[str(det_size[0])]
     if ANALYSIS_MODEL is None:
+        p = resolve_providers(provider)
         ANALYSIS_MODEL = ReActorFaceAnalysis(
-            name="buffalo_l", providers=providers, root=insightface_path
+            name="buffalo_l", providers=p, root=insightface_path
         )
     ANALYSIS_MODEL.prepare(ctx_id=0, det_size=det_size)
     ANALYSIS_MODELS[str(det_size[0])] = ANALYSIS_MODEL
     return ANALYSIS_MODEL
 
-def getFaceSwapModel(model_path: str):
-    global FS_MODEL, CURRENT_FS_MODEL_PATH
-    if FS_MODEL is None or CURRENT_FS_MODEL_PATH is None or CURRENT_FS_MODEL_PATH != model_path:
+def getFaceSwapModel(model_path: str, provider = "cuda"):
+    global FS_MODEL, CURRENT_FS_MODEL_PATH, CURRENT_FS_PROVIDER
+    if FS_MODEL is None or CURRENT_FS_MODEL_PATH is None or CURRENT_FS_MODEL_PATH != model_path or CURRENT_FS_PROVIDER != provider:
         CURRENT_FS_MODEL_PATH = model_path
+        CURRENT_FS_PROVIDER = provider
         FS_MODEL = unload_model(FS_MODEL)
 
+        p = resolve_providers(provider)
         model_filename = os.path.basename(model_path)
         if "hyperswap" in model_filename.lower(): # Если это Hyperswap
             model_path = os.path.join(folder_paths.models_dir, "hyperswap", model_filename)
-            FS_MODEL = HyperSwapper(model_path, providers=providers)
+            FS_MODEL = HyperSwapper(model_path, providers=p)
         else: # Если это INSwapper / Reswapper
             if "reswapper" in model_filename.lower():
                 model_path = os.path.join(folder_paths.models_dir, "reswapper", model_filename)
-            FS_MODEL = INSwapper(model_path, providers=providers)
+            FS_MODEL = INSwapper(model_path, providers=p)
 
     return FS_MODEL
 
@@ -314,8 +182,8 @@ def half_det_size(det_size):
     logger.status("Trying to halve 'det_size' parameter")
     return (det_size[0] // 2, det_size[1] // 2)
 
-def analyze_faces(img_data: np.ndarray, det_size=(640, 640)):
-    face_analyser = getAnalysisModel(det_size)
+def analyze_faces(img_data: np.ndarray, det_size=(640, 640), provider="cuda"):
+    face_analyser = getAnalysisModel(det_size, provider=provider)
 
     faces = []
     try:
@@ -329,11 +197,11 @@ def analyze_faces(img_data: np.ndarray, det_size=(640, 640)):
     # Try halving det_size if no faces are found
     if len(faces) == 0 and det_size[0] > 320 and det_size[1] > 320:
         det_size_half = half_det_size(det_size)
-        return analyze_faces(img_data, det_size_half)
+        return analyze_faces(img_data, det_size_half, provider=provider)
 
     return faces
 
-def get_face_single(img_data: np.ndarray, face, face_index=0, det_size=(640, 640), gender_source=0, gender_target=0, order="large-small"):
+def get_face_single(img_data: np.ndarray, face, face_index=0, det_size=(640, 640), gender_source=0, gender_target=0, order="large-small", provider="cuda"):
 
     buffalo_path = os.path.join(insightface_models_path, "buffalo_l.zip")
     if os.path.exists(buffalo_path):
@@ -342,18 +210,18 @@ def get_face_single(img_data: np.ndarray, face, face_index=0, det_size=(640, 640
     if gender_source != 0:
         if len(face) == 0 and det_size[0] > 320 and det_size[1] > 320:
             det_size_half = half_det_size(det_size)
-            return get_face_single(img_data, analyze_faces(img_data, det_size_half), face_index, det_size_half, gender_source, gender_target, order)
+            return get_face_single(img_data, analyze_faces(img_data, det_size_half, provider=provider), face_index, det_size_half, gender_source, gender_target, order, provider=provider)
         return get_face_gender(face,face_index,gender_source,"Source", order)
 
     if gender_target != 0:
         if len(face) == 0 and det_size[0] > 320 and det_size[1] > 320:
             det_size_half = half_det_size(det_size)
-            return get_face_single(img_data, analyze_faces(img_data, det_size_half), face_index, det_size_half, gender_source, gender_target, order)
+            return get_face_single(img_data, analyze_faces(img_data, det_size_half, provider=provider), face_index, det_size_half, gender_source, gender_target, order, provider=provider)
         return get_face_gender(face,face_index,gender_target,"Target", order)
     
     if len(face) == 0 and det_size[0] > 320 and det_size[1] > 320:
         det_size_half = half_det_size(det_size)
-        return get_face_single(img_data, analyze_faces(img_data, det_size_half), face_index, det_size_half, gender_source, gender_target, order)
+        return get_face_single(img_data, analyze_faces(img_data, det_size_half, provider=provider), face_index, det_size_half, gender_source, gender_target, order, provider=provider)
 
     try:
         faces_sorted = sort_by_order(face, order)
@@ -377,6 +245,8 @@ def swap_face(
     face_restore_visibility: int = 1,
     codeformer_weight: float = 0.5,
     interpolation: str = "Bicubic",
+    provider: str = "cuda",
+    face_boost_provider: Union[str, None] = None,
 ):
     global SOURCE_FACES, SOURCE_IMAGE_HASH, TARGET_FACES, TARGET_IMAGE_HASH
     result_image = target_img
@@ -419,7 +289,7 @@ def swap_face(
 
             if SOURCE_FACES is None or not source_image_same:
                 logger.status("Analyzing Source Image...")
-                source_faces = analyze_faces(source_img)
+                source_faces = analyze_faces(source_img, provider=provider)
                 SOURCE_FACES = source_faces
             elif source_image_same:
                 logger.status("Using Hashed Source Face(s) Model...")
@@ -452,7 +322,7 @@ def swap_face(
             
             if TARGET_FACES is None or not target_image_same:
                 logger.status("Analyzing Target Image...")
-                target_faces = analyze_faces(target_img)
+                target_faces = analyze_faces(target_img, provider=provider)
                 TARGET_FACES = target_faces
             elif target_image_same:
                 logger.status("Using Hashed Target Face(s) Model...")
@@ -468,11 +338,11 @@ def swap_face(
             valid_source_faces = []
             if source_img is not None:
                 for idx in source_faces_index:
-                    sf, src_wrong_gender, _ = get_face_single(source_img, source_faces, face_index=idx, gender_source=gender_source, order=faces_order[1])
+                    sf, src_wrong_gender, _ = get_face_single(source_img, source_faces, face_index=idx, gender_source=gender_source, order=faces_order[1], provider=provider)
                     if sf is not None and src_wrong_gender == 0:
                         valid_source_faces.append(sf)
             else:
-                sf, src_wrong_gender, _ = get_face_single(None, source_faces, face_index=source_faces_index[0], gender_source=gender_source, order=faces_order[1])
+                sf, src_wrong_gender, _ = get_face_single(None, source_faces, face_index=source_faces_index[0], gender_source=gender_source, order=faces_order[1], provider=provider)
                 if sf is not None and src_wrong_gender == 0:
                     valid_source_faces.append(sf)
 
@@ -487,13 +357,13 @@ def swap_face(
                 elif "hyperswap" in model:
                     model_path = os.path.join(hyperswap_path, model)
                 
-                face_swapper = getFaceSwapModel(model_path)
+                face_swapper = getFaceSwapModel(model_path, provider=provider)
 
                 source_face_idx = 0
 
                 # 2. Идем по целевым лицам
                 for face_num in faces_index:
-                    target_face, wrong_gender, target_face_index = get_face_single(target_img, target_faces, face_index=face_num, gender_target=gender_target, order=faces_order[0])
+                    target_face, wrong_gender, target_face_index = get_face_single(target_img, target_faces, face_index=face_num, gender_target=gender_target, order=faces_order[0], provider=provider)
                     
                     if target_face is not None and wrong_gender == 0:
                         logger.status(f"Swapping...")
@@ -504,7 +374,8 @@ def swap_face(
                         if face_boost_enabled and "hyperswap" not in model:
                             logger.status(f"Face Boost is enabled (inswapper/reswapper only)")
                             bgr_fake, M = face_swapper.get(result, target_face, source_face_to_use, paste_back=False)
-                            bgr_fake, scale = restorer.get_restored_face(bgr_fake, face_restore_model, face_restore_visibility, codeformer_weight, interpolation)
+                            boost_provider = face_boost_provider if face_boost_provider is not None else provider
+                            bgr_fake, scale = restorer.get_restored_face(bgr_fake, face_restore_model, face_restore_visibility, codeformer_weight, interpolation, provider=boost_provider)
                             M *= scale
                             result = swapper.in_swap(result, bgr_fake, M)
                         else:
@@ -544,6 +415,8 @@ def swap_face_many(
     face_restore_visibility: int = 1,
     codeformer_weight: float = 0.5,
     interpolation: str = "Bicubic",
+    provider: str = "cuda",
+    face_boost_provider: Union[str, None] = None,
 ):
     global SOURCE_FACES, SOURCE_IMAGE_HASH, TARGET_FACES, TARGET_IMAGE_HASH, TARGET_FACES_LIST, TARGET_IMAGE_LIST_HASH
     result_images = target_imgs
@@ -579,7 +452,7 @@ def swap_face_many(
 
             if SOURCE_FACES is None or not source_image_same:
                 logger.status("Analyzing Source Image...")
-                source_faces = analyze_faces(source_img)
+                source_faces = analyze_faces(source_img, provider=provider)
                 SOURCE_FACES = source_faces
             elif source_image_same:
                 logger.status("Using Hashed Source Face(s) Model...")
@@ -623,13 +496,13 @@ def swap_face_many(
                 logger.info("(Image %s) Target Image the Same? %s", i, target_image_same)
 
                 if len(TARGET_FACES_LIST) == 0:
-                    target_face = analyze_faces(target_img)
+                    target_face = analyze_faces(target_img, provider=provider)
                     TARGET_FACES_LIST = [target_face]
                 elif len(TARGET_FACES_LIST) == i and not target_image_same:
-                    target_face = analyze_faces(target_img)
+                    target_face = analyze_faces(target_img, provider=provider)
                     TARGET_FACES_LIST.append(target_face)
                 elif len(TARGET_FACES_LIST) != i and not target_image_same:
-                    target_face = analyze_faces(target_img)
+                    target_face = analyze_faces(target_img, provider=provider)
                     TARGET_FACES_LIST[i] = target_face
                 elif target_image_same:
                     target_face = TARGET_FACES_LIST[i]
@@ -649,11 +522,11 @@ def swap_face_many(
             valid_source_faces = []
             if source_img is not None:
                 for idx in source_faces_index:
-                    sf, src_wrong_gender, _ = get_face_single(source_img, source_faces, face_index=idx, gender_source=gender_source, order=faces_order[1])
+                    sf, src_wrong_gender, _ = get_face_single(source_img, source_faces, face_index=idx, gender_source=gender_source, order=faces_order[1], provider=provider)
                     if sf is not None and src_wrong_gender == 0:
                         valid_source_faces.append(sf)
             else:
-                sf, src_wrong_gender, _ = get_face_single(None, source_faces, face_index=source_faces_index[0], gender_source=gender_source, order=faces_order[1])
+                sf, src_wrong_gender, _ = get_face_single(None, source_faces, face_index=source_faces_index[0], gender_source=gender_source, order=faces_order[1], provider=provider)
                 if sf is not None and src_wrong_gender == 0:
                     valid_source_faces.append(sf)
 
@@ -668,7 +541,7 @@ def swap_face_many(
                 elif "hyperswap" in model:
                     model_path = os.path.join(hyperswap_path, model)
 
-                face_swapper = getFaceSwapModel(model_path)
+                face_swapper = getFaceSwapModel(model_path, provider=provider)
 
                 source_face_idx = 0
                 pbar = progress_bar(len(target_imgs))
@@ -678,7 +551,7 @@ def swap_face_many(
                     target_used_in_any_image = False
                     
                     for i, (target_img, target_face_list) in enumerate(zip(results, target_faces)):
-                        target_face_single, wrong_gender, target_face_index = get_face_single(target_img, target_face_list, face_index=face_num, gender_target=gender_target, order=faces_order[0])
+                        target_face_single, wrong_gender, target_face_index = get_face_single(target_img, target_face_list, face_index=face_num, gender_target=gender_target, order=faces_order[0], provider=provider)
                         
                         if target_face_single is not None and wrong_gender == 0:
                             target_used_in_any_image = True
@@ -687,7 +560,8 @@ def swap_face_many(
                             result = target_img
                             if face_boost_enabled and "hyperswap" not in model:
                                 bgr_fake, M = face_swapper.get(target_img, target_face_single, source_face_to_use, paste_back=False)
-                                bgr_fake, scale = restorer.get_restored_face(bgr_fake, face_restore_model, face_restore_visibility, codeformer_weight, interpolation)
+                                boost_provider = face_boost_provider if face_boost_provider is not None else provider
+                                bgr_fake, scale = restorer.get_restored_face(bgr_fake, face_restore_model, face_restore_visibility, codeformer_weight, interpolation, provider=boost_provider)
                                 M *= scale
                                 result = swapper.in_swap(target_img, bgr_fake, M)
                             else:

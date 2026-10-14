@@ -336,12 +336,15 @@ def center_of_bbox(bbox):
     return bbox[0] + w/2, bbox[1] + h/2
 
 def sam_predict(predictor, points, plabs, bbox, threshold):
-    point_coords = None if not points else np.array(points)
-    point_labels = None if not plabs else np.array(plabs)
+    import contextlib
+    autocast_ctx = torch.cuda.amp.autocast(enabled=False) if torch.cuda.is_available() else contextlib.nullcontext()
+    with autocast_ctx:
+        point_coords = None if not points else np.array(points)
+        point_labels = None if not plabs else np.array(plabs)
 
-    box = np.array([bbox]) if bbox is not None else None
+        box = np.array([bbox]) if bbox is not None else None
 
-    cur_masks, scores, _ = predictor.predict(point_coords=point_coords, point_labels=point_labels, box=box)
+        cur_masks, scores, _ = predictor.predict(point_coords=point_coords, point_labels=point_labels, box=box)
 
     total_masks = []
 
@@ -546,10 +549,15 @@ def make_sam_mask_segmented(sam_model, segs, image, detection_hint, dilation,
         # sam_model.safe_to.to_device(sam_model, device=device)
         sam_model.to(device)
 
+    sam_model = sam_model.float()
+    import contextlib
+    autocast_ctx = torch.cuda.amp.autocast(enabled=False) if torch.cuda.is_available() else contextlib.nullcontext()
+
     try:
-        predictor = SamPredictor(sam_model)
-        image = np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8)
-        predictor.set_image(image, "RGB")
+        with autocast_ctx:
+            predictor = SamPredictor(sam_model)
+            image = np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8)
+            predictor.set_image(image, "RGB")
 
         total_masks = []
 
